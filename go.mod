@@ -1,4 +1,4 @@
-module game-xray-server
+module my-xray-server
 
 go 1.26.4
 
