@@ -70,7 +70,7 @@ go build -o game-accelerator-server main.go
   - 使用 VSCode 等编辑器统一将文件保存格式设置为 `LF`；
   - 或上传后在 Linux 服务器执行 `dos2unix config.json` 进行转换；
   - Git 用户可在 `.gitattributes` 中添加 `*.json text eol=lf` 强制统一换行符。
-- 请遵守所在地区法律法规，仅将本工具用于合法合规的网络加速与测试场景。
+- 请遵守所在地区法律法规，仅将本工具用于合法合规的游戏网络加速与测试场景。
 
 ## 🧩 项目分工
 
