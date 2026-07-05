@@ -77,7 +77,7 @@ go build -o game-accelerator-server main.go
 | 角色 | 内容 |
 | --- | --- |
 | 代码实现 | Claude（AI 辅助生成核心代码逻辑） |
-| 问题发现 | 作者（发现需拆分独立 JSON 配置文件、Windows 与 Linux 换行符差异等实际部署问题） |
+| 问题发现 | 作者（发现 JSON 配置文件繁琐、Windows 与 Linux 换行符差异等实际部署问题） |
 | 问题解决 | 作者 |
 | 框架设计 | 作者 |
 | 部署测试 | 作者 |
