@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
@@ -21,14 +22,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/curve25519"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/infra/conf/serial"
 	_ "github.com/xtls/xray-core/main/distro/all"
+	"golang.org/x/crypto/curve25519"
 	_ "modernc.org/sqlite"
 )
 
-// ===== 编译期注入 =====
+// ===== 编译期注入（仅作为 build.ini 缺失时的兜底默认值）=====
 var (
 	cfgUsers      = "1"
 	cfgMode       = "ip"
@@ -45,9 +46,10 @@ var (
 )
 
 const (
-	dataDir = "zhiliaoya/mydata"
-	yamlDir = "zhiliaoya/yaml"
-	dbFile  = "xray.db"
+	dataDir   = "zhiliaoya/mydata"
+	yamlDir   = "zhiliaoya/yaml"
+	dbFile    = "xray.db"
+	iniFile   = "build.ini"
 )
 
 type UserRecord struct {
@@ -61,6 +63,300 @@ type UserRecord struct {
 	ServerAddr string
 	Port       int
 	CreatedAt  string
+}
+
+// ===== 配置结构（对应 build.ini / config 表）=====
+
+type BuildConfig struct {
+	Users      int
+	Port       int
+	Mode       string // ip | domain
+	Domain     string
+	Storage    string // none | sql
+	ServerName string
+	ProxyName  string
+
+	APIEnabled bool
+	APIListen  string
+	APIPort    string
+}
+
+func defaultBuildConfig() BuildConfig {
+	users, err := strconv.Atoi(cfgUsers)
+	if err != nil || users < 1 {
+		users = 1
+	}
+	if users > 3 {
+		users = 3
+	}
+	port, err := strconv.Atoi(cfgPort)
+	if err != nil || port < 1 || port > 65535 {
+		port = 8206
+	}
+	apiListen := cfgAPIListen
+	if apiListen == "" {
+		apiListen = "127.0.0.1"
+	}
+	apiPort := cfgAPIPort
+	if apiPort == "" {
+		apiPort = "8207"
+	}
+	return BuildConfig{
+		Users:      users,
+		Port:       port,
+		Mode:       strings.ToLower(cfgMode),
+		Domain:     cfgDomain,
+		Storage:    strings.ToLower(cfgStorage),
+		ServerName: cfgServerName,
+		ProxyName:  cfgProxyName,
+		APIEnabled: strings.EqualFold(cfgAPIEnabled, "true"),
+		APIListen:  apiListen,
+		APIPort:    apiPort,
+	}
+}
+
+// loadBuildIni 解析 build.ini；文件不存在返回 (nil, nil)
+func loadBuildIni(path string) (*BuildConfig, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	kv := make(map[string]string)
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			continue // 忽略 section 行
+		}
+		idx := strings.IndexAny(line, "=:")
+		if idx < 0 {
+			continue
+		}
+		k := strings.ToLower(strings.TrimSpace(line[:idx]))
+		v := strings.TrimSpace(line[idx+1:])
+		if i := strings.Index(v, " #"); i >= 0 {
+			v = strings.TrimSpace(v[:i])
+		}
+		kv[k] = v
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+
+	cfg := defaultBuildConfig()
+	if v, ok := kv["users"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			if n > 3 {
+				n = 3
+			}
+			cfg.Users = n
+		}
+	}
+	if v, ok := kv["port"]; ok {
+		if p, err := strconv.Atoi(v); err == nil && p >= 1 && p <= 65535 {
+			cfg.Port = p
+		}
+	}
+	if v, ok := kv["mode"]; ok && v != "" {
+		cfg.Mode = strings.ToLower(v)
+	}
+	if v, ok := kv["domain"]; ok {
+		cfg.Domain = v
+	}
+	if v, ok := kv["storage"]; ok && v != "" {
+		cfg.Storage = strings.ToLower(v)
+	}
+	if v, ok := kv["server_name"]; ok && v != "" {
+		cfg.ServerName = v
+	}
+	if v, ok := kv["proxy_name"]; ok && v != "" {
+		cfg.ProxyName = v
+	}
+	if v, ok := kv["api_enabled"]; ok {
+		cfg.APIEnabled = strings.EqualFold(v, "true")
+	}
+	if v, ok := kv["api_listen"]; ok && v != "" {
+		cfg.APIListen = v
+	}
+	if v, ok := kv["api_port"]; ok && v != "" {
+		cfg.APIPort = v
+	}
+	return &cfg, nil
+}
+
+// ===== DB config 表 =====
+
+func ensureConfigTable(db *sql.DB) error {
+	_, err := db.Exec(`
+	CREATE TABLE IF NOT EXISTS config (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL,
+		created_at TEXT NOT NULL
+	);`)
+	return err
+}
+
+func saveConfig(db *sql.DB, c BuildConfig) error {
+	now := time.Now().Format(time.RFC3339)
+	items := map[string]string{
+		"users":       strconv.Itoa(c.Users),
+		"port":        strconv.Itoa(c.Port),
+		"mode":        c.Mode,
+		"domain":      c.Domain,
+		"storage":     c.Storage,
+		"server_name": c.ServerName,
+		"proxy_name":  c.ProxyName,
+		"api_enabled": strconv.FormatBool(c.APIEnabled),
+		"api_listen":  c.APIListen,
+		"api_port":    c.APIPort,
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO config (key, value, created_at) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for k, v := range items {
+		if _, err := stmt.Exec(k, v, now); err != nil {
+			return fmt.Errorf("写入 config[%s] 失败: %w", k, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func loadConfig(db *sql.DB) (*BuildConfig, error) {
+	if err := ensureConfigTable(db); err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT key, value FROM config`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	kv := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		kv[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(kv) == 0 {
+		return nil, nil
+	}
+
+	cfg := defaultBuildConfig()
+	if v, ok := kv["users"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			if n > 3 {
+				n = 3
+			}
+			cfg.Users = n
+		}
+	}
+	if v, ok := kv["port"]; ok {
+		if p, err := strconv.Atoi(v); err == nil && p >= 1 && p <= 65535 {
+			cfg.Port = p
+		}
+	}
+	if v, ok := kv["mode"]; ok {
+		cfg.Mode = v
+	}
+	if v, ok := kv["domain"]; ok {
+		cfg.Domain = v
+	}
+	if v, ok := kv["storage"]; ok {
+		cfg.Storage = v
+	}
+	if v, ok := kv["server_name"]; ok {
+		cfg.ServerName = v
+	}
+	if v, ok := kv["proxy_name"]; ok {
+		cfg.ProxyName = v
+	}
+	if v, ok := kv["api_enabled"]; ok {
+		cfg.APIEnabled = strings.EqualFold(v, "true")
+	}
+	if v, ok := kv["api_listen"]; ok {
+		cfg.APIListen = v
+	}
+	if v, ok := kv["api_port"]; ok {
+		cfg.APIPort = v
+	}
+	return &cfg, nil
+}
+
+// resolveConfig 决定本次运行使用哪套配置
+//   1. 若 storage=sql 且 config 表非空 → 用 DB 中的配置
+//   2. 否则读 build.ini（缺失则用编译期默认值）；storage=sql 时写入 DB
+// 返回 (cfg, db, fromIni, err)；db 非 nil 由调用方关闭。
+func resolveConfig() (BuildConfig, *sql.DB, bool, error) {
+	ini, err := loadBuildIni(iniFile)
+	if err != nil {
+		return BuildConfig{}, nil, false, fmt.Errorf("解析 %s 失败: %w", iniFile, err)
+	}
+
+	storage := strings.ToLower(cfgStorage)
+	if ini != nil && ini.Storage != "" {
+		storage = ini.Storage
+	}
+
+	if storage == "none" {
+		if ini != nil {
+			return *ini, nil, true, nil
+		}
+		return defaultBuildConfig(), nil, true, nil
+	}
+	if storage != "sql" {
+		return BuildConfig{}, nil, false, fmt.Errorf("未知的 storage=%q（应为 none 或 sql）", storage)
+	}
+
+	db, err := openDB()
+	if err != nil {
+		return BuildConfig{}, nil, false, fmt.Errorf("打开数据库失败: %w", err)
+	}
+
+	stored, err := loadConfig(db)
+	if err != nil {
+		db.Close()
+		return BuildConfig{}, nil, false, fmt.Errorf("读取 DB 配置失败: %w", err)
+	}
+
+	if stored != nil {
+		fmt.Println("[INFO] 检测到已有 SQL 配置，复用数据库中的配置")
+		return *stored, db, false, nil
+	}
+
+	cfg := defaultBuildConfig()
+	if ini != nil {
+		cfg = *ini
+	}
+	cfg.Storage = "sql"
+
+	if err := saveConfig(db, cfg); err != nil {
+		db.Close()
+		return BuildConfig{}, nil, false, fmt.Errorf("写入 DB 配置失败: %w", err)
+	}
+	fmt.Println("[INFO] 首次运行：已从 build.ini 读取配置并写入 SQL 配置表")
+	return cfg, db, true, nil
 }
 
 // ===== 应用状态（供 API 读取）=====
@@ -152,12 +448,12 @@ func getPublicIP() (string, error) {
 	return strings.TrimSpace(string(ip)), nil
 }
 
-func resolveServerAddr() (string, error) {
-	if strings.ToLower(cfgMode) == "domain" {
-		if cfgDomain == "" {
-			return "", fmt.Errorf("domain 模式但 cfgDomain 为空")
+func resolveServerAddrWith(mode, domain string) (string, error) {
+	if strings.ToLower(mode) == "domain" {
+		if domain == "" {
+			return "", fmt.Errorf("domain 模式但 domain 为空")
 		}
-		return cfgDomain, nil
+		return domain, nil
 	}
 	return getPublicIP()
 }
@@ -201,6 +497,10 @@ func openDB() (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureConfigTable(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -232,13 +532,9 @@ func insertUser(db *sql.DB, u UserRecord) error {
 
 // ===== 用户构造 =====
 
-// newUserRecord 生成一个用户。
-// sharedKey 非空时，复用其 privateKey/publicKey（方案 B：所有用户共享同一对 REALITY 密钥），
-// 只生成新的 UUID 和 shortID；sharedKey 为空时生成全新密钥对（第一个用户）。
 func newUserRecord(idx int, serverName, proxyName string, sharedKey *UserRecord) (UserRecord, error) {
 	var privateKey, publicKey string
 	if sharedKey != nil {
-		// 方案 B：共享 REALITY 密钥对
 		privateKey = sharedKey.PrivateKey
 		publicKey = sharedKey.PublicKey
 	} else {
@@ -319,19 +615,17 @@ func buildVolatileUsers(n int, serverName, proxyName string) ([]UserRecord, erro
 
 // ===== SQL 存储模式 =====
 
-func buildPersistentUsers(n int, serverName, proxyName string) ([]UserRecord, error) {
-	db, err := openDB()
-	if err != nil {
-		return nil, fmt.Errorf("打开数据库失败: %w", err)
+// buildPersistentUsersWithDB 使用已打开的 db，不负责关闭
+func buildPersistentUsersWithDB(db *sql.DB, n int, serverName, proxyName string) ([]UserRecord, error) {
+	if err := ensureConfigTable(db); err != nil {
+		return nil, fmt.Errorf("初始化 config 表失败: %w", err)
 	}
-	defer db.Close()
-
 	users, err := loadUsers(db)
 	if err != nil {
 		return nil, fmt.Errorf("读取用户失败: %w", err)
 	}
 
-	// 空库：生成 n 个，第一个生成新密钥对，后续共享
+	// 空库：生成 n 个
 	if len(users) == 0 {
 		fmt.Println("[INFO] 未发现用户配置，开始生成...")
 		var first *UserRecord
@@ -370,6 +664,16 @@ func buildPersistentUsers(n int, serverName, proxyName string) ([]UserRecord, er
 	return users, nil
 }
 
+// 保留旧签名（内部开/关 db），供可能的外部调用；main 已改用 WithDB 版本
+func buildPersistentUsers(n int, serverName, proxyName string) ([]UserRecord, error) {
+	db, err := openDB()
+	if err != nil {
+		return nil, fmt.Errorf("打开数据库失败: %w", err)
+	}
+	defer db.Close()
+	return buildPersistentUsersWithDB(db, n, serverName, proxyName)
+}
+
 // ===== 打印 / Xray 配置 =====
 
 func printUserInfo(u UserRecord) {
@@ -394,9 +698,6 @@ func buildXrayConfig(users []UserRecord, listenPort int) string {
 		shortIDs = append(shortIDs, fmt.Sprintf(`"%s"`, u.ShortID))
 	}
 
-	// REALITY 的 privateKey / dest / serverNames 是入站级别的，
-	// 只能取第一个用户的（所有用户共享同一对密钥）；
-	// shortIds 是列表，把所有用户的 shortID 都放进去。
 	first := users[0]
 
 	return fmt.Sprintf(`{
@@ -435,13 +736,11 @@ func buildXrayConfig(users []UserRecord, listenPort int) string {
 func startAPIServer(listen, port string) {
 	mux := http.NewServeMux()
 
-	// 1) 进程存活：能进 handler 就 200，不碰 Xray
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	// 2) Xray 就绪：读状态，不主动探测
 	mux.HandleFunc("/hxray", func(w http.ResponseWriter, r *http.Request) {
 		snap := appState.Snapshot()
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -473,39 +772,41 @@ func startAPIServer(listen, port string) {
 // ===== main =====
 
 func main() {
-	// 解析用户数
-	n, err := strconv.Atoi(cfgUsers)
-	if err != nil || n < 1 {
-		n = 1
+	// 1) 决定配置来源：DB 优先，否则 build.ini，否则编译期默认
+	cfg, db, fromIni, err := resolveConfig()
+	if err != nil {
+		log.Fatalf("加载配置失败: %v", err)
 	}
-	if n > 3 {
-		n = 3
-	}
-
-	// 解析端口
-	listenPort, err := strconv.Atoi(cfgPort)
-	if err != nil || listenPort < 1 || listenPort > 65535 {
-		listenPort = 8206
+	if db != nil {
+		defer db.Close()
 	}
 
-	fmt.Printf("运行模式: %d 人，连接=%s，存储=%s，端口=%d\n", n, cfgMode, cfgStorage, listenPort)
+    
 
-	serverAddr, err := resolveServerAddr()
+	n := cfg.Users
+	listenPort := cfg.Port
+
+	fmt.Printf("运行模式: %d 人，连接=%s，存储=%s，端口=%d (配置来源: ini=%v)\n",
+		n, cfg.Mode, cfg.Storage, listenPort, fromIni)
+
+	// 2) 解析连接地址
+	serverAddr, err := resolveServerAddrWith(cfg.Mode, cfg.Domain)
 	if err != nil {
 		log.Fatalf("解析连接地址失败: %v", err)
 	}
 	fmt.Println("连接地址 :", serverAddr)
 
-	// 先起 API：liveness 在启动阶段即可用，readiness 此时自然为 503
-	if strings.EqualFold(cfgAPIEnabled, "true") {
-		startAPIServer(cfgAPIListen, cfgAPIPort)
+	// 3) 先起 API：liveness 启动阶段即可用，readiness 自然为 503
+	if cfg.APIEnabled {
+		startAPIServer(cfg.APIListen, cfg.APIPort)
 	}
 
+	// 4) 构造用户
 	var users []UserRecord
 
-	switch strings.ToLower(cfgStorage) {
+	switch cfg.Storage {
 	case "none":
-		users, err = buildVolatileUsers(n, cfgServerName, cfgProxyName)
+		users, err = buildVolatileUsers(n, cfg.ServerName, cfg.ProxyName)
 		if err != nil {
 			log.Fatalf("生成用户失败: %v", err)
 		}
@@ -514,12 +815,11 @@ func main() {
 			users[i].Port = listenPort
 		}
 		fmt.Println("[INFO] 无存储模式：配置仅本次运行有效，重启即失效")
-	case "sql", "":
-		users, err = buildPersistentUsers(n, cfgServerName, cfgProxyName)
+	case "sql":
+		users, err = buildPersistentUsersWithDB(db, n, cfg.ServerName, cfg.ProxyName)
 		if err != nil {
 			log.Fatalf("初始化用户失败: %v", err)
 		}
-		// 共享的 publicKey 取第一个用户的（方案 B：服务端只用第一对密钥）
 		sharedPublicKey := users[0].PublicKey
 		for i := range users {
 			users[i].ServerAddr = serverAddr
@@ -529,10 +829,10 @@ func main() {
 			}
 		}
 	default:
-		log.Fatalf("未知的 storage=%q（应为 none 或 sql）", cfgStorage)
+		log.Fatalf("未知的 storage=%q（应为 none 或 sql）", cfg.Storage)
 	}
 
-	// 打印：明确区分共享 publicKey 与各用户独立 shortID
+	// 打印
 	fmt.Println("REALITY 共享 PublicKey:", users[0].PublicKey)
 	fmt.Println("各用户 shortID 独立，已全部注册到服务端 shortIds")
 	fmt.Println()
@@ -542,7 +842,7 @@ func main() {
 		fmt.Println()
 	}
 
-	// 启动 Xray
+	// 5) 启动 Xray
 	configJSON := buildXrayConfig(users, listenPort)
 	pbConfig, err := serial.LoadJSONConfig(strings.NewReader(configJSON))
 	if err != nil {
@@ -562,7 +862,7 @@ func main() {
 	appState.MarkXrayUp(listenPort, len(users))
 	fmt.Println("Xray (VLESS+REALITY) 已启动，监听端口", listenPort)
 
-	// 优雅退出
+	// 6) 优雅退出
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
