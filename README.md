@@ -1,5 +1,5 @@
-# 便捷游戏加速器服务端 V2 (Easy Game Accelerator Server V2)
-## 额外提示：V2不提供编译版本了，因为涉及到个人的隐私，所以请各位自行编译。
+# 便捷游戏加速器服务端 V2小白版本 (Easy Game Accelerator Server V2)
+
 基于 [Xray-core](https://github.com/XTLS/Xray-core) 实现的 VLESS + REALITY 一键服务端启动工具。运行后自动生成密钥对、UUID、ShortID，并自动探测本机公网 IP，直接输出可导入 Clash / Mihomo 等客户端的节点配置，无需手动拼接繁琐参数。
 
 V2 版本在 V1 基础上引入了**多用户支持、SQLite 持久化、编译期配置注入、健康检查 API** 等生产级特性，同时修复了 V1 中 JSON 配置硬编码、换行符差异等实际部署痛点。
