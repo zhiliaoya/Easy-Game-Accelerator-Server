@@ -1,4 +1,4 @@
-# 便捷游戏加速器服务端 V2小白版本 (Easy Game Accelerator Server V2)
+# 便捷游戏加速器服务端 V2支持.ini配置文件版本 (Easy Game Accelerator Server V2)
 
 ## 额外提示：因为涉及到个人的隐私以及法律法规，所以请各位自行编译。
 
