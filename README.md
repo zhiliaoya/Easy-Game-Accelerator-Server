@@ -1,5 +1,7 @@
 # 便捷游戏加速器服务端 V2小白版本 (Easy Game Accelerator Server V2)
 
+## 额外提示：因为涉及到个人的隐私以及法律法规，所以请各位自行编译。
+
 基于 [Xray-core](https://github.com/XTLS/Xray-core) 实现的 VLESS + REALITY 一键服务端启动工具。运行后自动生成密钥对、UUID、ShortID，并自动探测本机公网 IP，直接输出可导入 Clash / Mihomo 等客户端的节点配置，无需手动拼接繁琐参数。
 
 V2 版本在 V1 基础上引入了**多用户支持、SQLite 持久化、编译期配置注入、健康检查 API** 等生产级特性，同时修复了 V1 中 JSON 配置硬编码、换行符差异等实际部署痛点。
@@ -54,7 +56,7 @@ V2 版本在 V1 基础上引入了**多用户支持、SQLite 持久化、编译�
 V2 采用**编译期配置注入**，所有运行参数通过 `-ldflags -X` 传入，无需在代码中硬编码修改：
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath   -ldflags "-s -w    -X main.cfgUsers=3    -X main.cfgPort=8206    -X main.cfgMode=ip    -X main.cfgDomain=    -X main.cfgStorage=sql    -X main.cfgServerName=www.bing.com    -X main.cfgProxyName=ZhiLiaoYa-Game-VLESS    -X main.cfgAPIEnabled=true    -X main.cfgAPIListen=127.0.0.1    -X main.cfgAPIPort=8207"   -o my-xray-server .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o my-xray-server .
 ```
 
 > 💡 `-trimpath -s -w` 去除路径信息与调试符号，减小二进制体积；`CGO_ENABLED=0` 保证在 Alpine 等无 glibc 环境也能运行。
