@@ -1,50 +1,163 @@
-# 便捷游戏加速器服务端 (Easy Game Accelerator Server)
+# 便捷游戏加速器服务端 V2 (Easy Game Accelerator Server V2)
 
-基于 [Xray-core](https://github.com/XTLS/Xray-core) 实现的 VLESS + REALITY 一键服务端启动工具。运行后自动生成密钥对、UUID、ShortID，并自动探测本机公网 IP，直接打印出可导入 Clash / Mihomo 等客户端的节点配置，无需手动拼接繁琐参数。
+基于 [Xray-core](https://github.com/XTLS/Xray-core) 实现的 VLESS + REALITY 一键服务端启动工具。运行后自动生成密钥对、UUID、ShortID，并自动探测本机公网 IP，直接输出可导入 Clash / Mihomo 等客户端的节点配置，无需手动拼接繁琐参数。
 
-> A one-click VLESS + REALITY server bootstrap tool built on Xray-core. Automatically generates key pairs, UUID, and ShortID, detects the machine's public IP, and prints ready-to-use Clash/Mihomo node configs.
+V2 版本在 V1 基础上引入了**多用户支持、SQLite 持久化、编译期配置注入、健康检查 API** 等生产级特性，同时修复了 V1 中 JSON 配置硬编码、换行符差异等实际部署痛点。
+
+> A one-click VLESS + REALITY server bootstrap tool built on Xray-core. Automatically generates key pairs, UUID, and ShortID, detects the machine's public IP, and prints ready-to-use Clash/Mihomo node configs. V2 adds multi-user support, SQLite persistence, compile-time config injection, and health-check APIs.
+
+## 🤖 AI 生成声明
+
+> **本项目 V2 版本代码的 90% 以上由 DeepSeek 生成**，少量错误逻辑和边界问题由作者发现并反馈修正。
+>
+> 作者角色：
+> - 🏗️ 项目框架设计
+> - ⚙️ 编译参数与部署配置设计
+> - 🧪 运行测试与 Bug 反馈
+> - 🔄 人机协作流程协调
+>
+> 这是一个典型的 **AI 辅助编程实践项目**。V2 相对 V1 的演进过程（从单用户到多用户、从内存到 SQLite、从硬编码到编译期注入）展示了当前大语言模型在**渐进式重构**和**生产化改造**中的能力与局限性。通过人机协作，大幅提升了开发效率，同时保证了代码质量。
 
 ## ✨ 功能特性
 
-- 🔑 自动生成 REALITY 密钥对（Curve25519）与 ShortID，无需手动执行 `xray x25519`
-- 🌐 自动探测本机公网 IP，避免手动查询、复制粘贴出错
-- 🧾 一键输出 Clash/Mihomo 风格 YAML 节点配置，复制即用
+### V2 新增特性
+
+- 👥 **多用户支持**：单进程支持 1~3 个用户，每个用户拥有独立 UUID 与 ShortID
+- 🗄️ **SQLite 持久化**：重启不丢用户配置，支持自动扩容（用户数增加时增量生成）
+- 🧩 **编译期配置注入**：通过 `-ldflags -X` 注入用户数、端口、存储模式等参数，无需改代码重新编译
+- 📄 **YAML 自动落盘**：为每个用户生成独立的 Clash/Mihomo 节点文件，方便批量分发
+- 🩺 **健康检查 API**：内置 `/healthz`（存活探针）与 `/hxray`（就绪探针），适配 K8s / Docker Compose 健康检查
+- 🔑 **共享 REALITY 密钥对**：所有用户共享同一对 Curve25519 密钥，仅 UUID/ShortID 独立，符合 REALITY 协议设计
+- 🛑 **优雅退出**：响应 SIGINT/SIGTERM，关闭 Xray 实例后再退出进程
+
+### 沿用 V1 的核心能力
+
+- 🔑 自动生成 REALITY 密钥对（Curve25519）与 ShortID
+- 🌐 自动探测本机公网 IP，支持 `ip` / `domain` 两种连接地址模式
+- 🧾 输出 Clash/Mihomo 风格 YAML 节点配置，复制即用
 - 🛡️ 内置 VLESS + REALITY + `xtls-rprx-vision`，以正常网站（默认 `www.bing.com`）作为伪装目标，抗探测能力强
-- ⚙️ 命令行参数自定义伪装域名（SNI）与节点名称，无需改代码
+- ⚙️ 伪装域名（SNI）与节点名前缀可通过编译参数自定义
 
 ## 📦 环境要求
 
-- Go 1.20+
+- Go 1.20+（V2 使用 `modernc.org/sqlite` 纯 Go 实现，无需 CGO）
 - 依赖模块：
   - `github.com/google/uuid`
   - `golang.org/x/crypto/curve25519`
   - `github.com/xtls/xray-core`
+  - `modernc.org/sqlite`（纯 Go SQLite 驱动，CGO_ENABLED=0 也可编译）
 
 ## 🚀 快速开始
 
+### 1. 编译
+
+V2 采用**编译期配置注入**，所有运行参数通过 `-ldflags -X` 传入，无需在代码中硬编码修改：
+
 ```bash
-# 克隆项目
-git clone https://github.com/<your-name>/game-accelerator-server.git
-cd game-accelerator-server
-
-# 安装依赖
-go mod tidy
-
-# 编译
-go build -o game-accelerator-server main.go
-
-# 运行（默认伪装域名 www.bing.com，节点名 Game-VLESS）
-./game-accelerator-server
-
-# 自定义伪装域名与节点名
-./game-accelerator-server www.microsoft.com MyNode
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath   -ldflags "-s -w    -X main.cfgUsers=3    -X main.cfgPort=8206    -X main.cfgMode=ip    -X main.cfgDomain=    -X main.cfgStorage=sql    -X main.cfgServerName=www.bing.com    -X main.cfgProxyName=ZhiLiaoYa-Game-VLESS    -X main.cfgAPIEnabled=true    -X main.cfgAPIListen=127.0.0.1    -X main.cfgAPIPort=8207"   -o my-xray-server .
 ```
 
-运行后终端会依次输出：
+> 💡 `-trimpath -s -w` 去除路径信息与调试符号，减小二进制体积；`CGO_ENABLED=0` 保证在 Alpine 等无 glibc 环境也能运行。
 
-1. 客户端连接信息（公网 IP / UUID / 公钥 / SNI / ShortID / 端口 / Flow）
-2. 可直接粘贴进 Clash/Mihomo 配置文件的 YAML 节点片段
-3. 服务端启动日志，监听 `443` 端口等待客户端连接
+### 2. 运行
+
+```bash
+# 需要 root 权限（监听 443 端口）
+sudo ./my-xray-server
+```
+
+运行后终端依次输出：
+
+1. 运行模式摘要（用户数 / 连接模式 / 存储模式 / 端口）
+2. 连接地址（自动探测的公网 IP 或配置的域名）
+3. 每个用户的客户端连接信息（UUID / ShortID / PublicKey 等）
+4. 每个用户的 YAML 配置文件路径（`zhiliaoya/yaml/client-N.yaml`）
+5. Xray 启动日志，监听指定端口等待客户端连接
+
+### 3. 配置参数一览
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `cfgUsers` | `1` | 用户数量（1~3） |
+| `cfgPort` | `8206` | 监听端口 |
+| `cfgMode` | `ip` | 连接地址模式：`ip`（自动探测）或 `domain`（手动指定） |
+| `cfgDomain` | 空 | `domain` 模式下的域名，`ip` 模式留空即可 |
+| `cfgStorage` | `sql` | 存储模式：`none`（无存储）或 `sql`（SQLite 持久化） |
+| `cfgServerName` | `www.bing.com` | REALITY 伪装域名（SNI） |
+| `cfgProxyName` | `Game-VLESS` | 节点名称前缀，自动追加 `-1/-2/-3` |
+| `cfgAPIEnabled` | `true` | 是否启用健康检查 API |
+| `cfgAPIListen` | `127.0.0.1` | 健康检查 API 监听地址 |
+| `cfgAPIPort` | `8207` | 健康检查 API 监听端口 |
+
+### 4. 目录结构
+
+运行后自动生成以下目录：
+
+```
+zhiliaoya/
+├── mydata/
+│   └── xray.db          # SQLite 用户数据库
+└── yaml/
+    ├── client-1.yaml    # 用户 1 的 Clash/Mihomo 配置
+    ├── client-2.yaml
+    └── client-3.yaml
+```
+
+## 🩺 健康检查 API
+
+V2 内置两个健康检查端点，适配 Kubernetes / Docker Compose 健康检查：
+
+| 端点 | 用途 | 说明 |
+|------|------|------|
+| `GET /healthz` | 存活探针（Liveness） | 进程能响应即 200，不依赖 Xray 状态 |
+| `GET /hxray` | 就绪探针（Readiness） | Xray 未启动时返回 503，就绪后返回 200 + JSON 状态 |
+
+`/hxray` 返回示例：
+
+```json
+{
+  "ok": true,
+  "xray_up": true,
+  "uptime_sec": 3600,
+  "listen_port": 8206,
+  "user_count": 3,
+  "last_error": "",
+  "last_err_at": "0001-01-01T00:00:00Z"
+}
+```
+
+**Kubernetes 探针配置示例：**
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8207
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /hxray
+    port: 8207
+  initialDelaySeconds: 10
+  periodSeconds: 10
+```
+
+**Docker Compose 健康检查示例：**
+
+```yaml
+services:
+  xray-server:
+    image: my-xray-server:latest
+    ports:
+      - "8206:8206"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8207/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
 
 ## 🖥️ 服务器推荐
 
@@ -63,28 +176,65 @@ go build -o game-accelerator-server main.go
 
 ## ⚠️ 使用注意事项
 
-- **端口占用**：程序固定监听 `443` 端口，需要 root/管理员权限，并确保该端口未被其他服务（如 Nginx）占用。
-- **公网 IP 获取依赖外网**：程序通过 `api.ipify.org` 获取公网 IP，若服务器无法访问外网或该服务不可用，需要自行替换探测方式或手动指定 IP。
-- **单独的 JSON 配置文件**：Xray 服务端配置目前以字符串形式硬编码在代码中生成，实际部署建议拆分为独立的 `config.json` 文件单独维护，便于修改、复用与版本管理，避免每次调整配置都要重新编译。
-- **Windows / Linux 文本格式差异**：如果将配置文件在 Windows 上编辑后再上传到 Linux 服务器运行，需要注意换行符差异（Windows 为 `CRLF`，Linux 为 `LF`），否则 Xray 解析 JSON 配置时可能报错。建议：
-  - 使用 VSCode 等编辑器统一将文件保存格式设置为 `LF`；
-  - 或上传后在 Linux 服务器执行 `dos2unix config.json` 进行转换；
-  - Git 用户可在 `.gitattributes` 中添加 `*.json text eol=lf` 强制统一换行符。
+- **端口占用**：程序监听 `443`（或 `cfgPort` 指定端口），需要 root/管理员权限，并确保该端口未被其他服务（如 Nginx）占用。
+- **公网 IP 获取依赖外网**：`ip` 模式下程序通过 `api.ipify.org` 获取公网 IP，若服务器无法访问外网或该服务不可用，请改用 `cfgMode=domain` 并手动指定 `cfgDomain`。
+- **SQLite 持久化与扩容**：`cfgStorage=sql` 时用户配置持久化到 `zhiliaoya/mydata/xray.db`。重启时若 `cfgUsers` 增大，会基于已有用户的密钥对增量生成新用户；若减小，则多余用户仍保留在库中但不会注册到 Xray 入站。
+- **共享 REALITY 密钥对**：所有用户共享同一对 Curve25519 密钥（方案 B），仅 UUID 与 ShortID 独立。这是 REALITY 协议的设计约束——`privateKey` / `dest` / `serverNames` 是入站级别的，无法按用户区分。
+- **Windows / Linux 文本格式差异**：V2 已通过编译期注入规避硬编码 JSON 配置文件，若需手动维护配置文件，仍建议在 VSCode 中将换行符统一为 `LF`，或在 Linux 上执行 `dos2unix` 转换。
+- **无存储模式的易失性**：`cfgStorage=none` 时所有用户配置仅本次运行有效，重启后 UUID、ShortID、密钥对全部重新生成，仅适合临时测试。
+- **API 安全**：健康检查 API 默认仅监听 `127.0.0.1`，请勿直接暴露到公网；如需外部访问，建议通过反向代理 + 认证保护。
 - 请遵守所在地区法律法规，仅将本工具用于合法合规的游戏网络加速与测试场景。
 
 ## 🧩 项目分工
 
 | 角色 | 内容 |
 | --- | --- |
-| 代码实现 | Claude（AI 辅助生成核心代码逻辑） |
+| 代码实现 | DeepSeek（AI 辅助生成 V2 核心代码逻辑，含多用户、SQLite、健康检查 API） |
 | 问题发现 | 作者（发现 JSON 配置文件繁琐、Windows 与 Linux 换行符差异等实际部署问题） |
-| 问题解决 | 作者 |
-| 框架设计 | 作者 |
-| 部署测试 | 作者 |
-| Bug 反馈 | 作者 |
+| 问题解决 | 作者（提出编译期注入、共享密钥对、优雅退出等设计方案） |
+| 框架设计 | 作者（V1 → V2 演进路线、多用户方案、API 探针设计） |
+| 部署测试 | 作者（编译、部署、健康检查验证） |
+| Bug 反馈 | 作者（反馈运行时问题并协助定位） |
 
-欢迎通过 Issue 反馈问题或提交 PR 改进项目。
+### V1 → V2 演进说明
+
+| 维度 | V1 | V2 |
+|------|----|----|
+| 用户数量 | 单用户 | 1~3 用户 |
+| 配置方式 | 命令行参数 / 代码硬编码 | 编译期 `-ldflags -X` 注入 |
+| 存储 | 无（每次重启重新生成） | SQLite 持久化 + 自动扩容 |
+| YAML 输出 | 仅打印到终端 | 落盘到 `zhiliaoya/yaml/` |
+| 健康检查 | 无 | `/healthz` + `/hxray` 双探针 |
+| 退出方式 | 强制终止 | 优雅退出（SIGINT/SIGTERM） |
+| 密钥管理 | 单对密钥 | 共享密钥对 + 独立 UUID/ShortID |
+
+> V2 的演进过程由作者提出设计方向，DeepSeek 完成主体代码生成，作者负责编译部署、测试验证与问题反馈。这体现了 AI 辅助编程在**渐进式重构**场景下的典型工作流。
 
 ## 📄 License
 
 MIT
+
+## 🤝 贡献
+
+欢迎通过 Issue 反馈问题或提交 PR 改进项目。
+
+### 特别欢迎以下贡献：
+- 🌟 更多用户的并发支持（> 3 用户场景优化）
+- 🌟 用户管理 API（增删用户、查询流量统计）
+- 🌟 多端口 / 多入站支持
+- 🌟 配置热重载（无需重启更新用户）
+- 🌟 性能优化与 Bug 修复
+
+---
+
+**Easy Game Accelerator Server V2** - 从能用到好用的一步之遥 🚀
+
+> *编译期注入配置，一次构建，多环境部署*
+>
+> *SQLite 持久化 + 自动扩容，重启不丢配置*
+>
+> *健康检查双探针，适配 K8s / Docker Compose*
+>
+> *多用户共享密钥，符合 REALITY 协议设计*
+>
+> *本项目是 AI 辅助编程的实践成果，展示了人机协作在渐进式重构中的高效开发模式*
